@@ -4,88 +4,111 @@ import (
 	"fmt"
 	"image"
 	"image/png"
-	"io"
-	"math"
+	"log"
+	"math/rand"
 	"os"
 
+	"github.com/anthonynsimon/bild/blur"
+	"github.com/anthonynsimon/bild/effect"
 	"github.com/lucasb-eyer/go-colorful"
 )
 
+var (
+	white = colorful.Color{R: 1.0, G: 1.0, B: 1.0}
+	black = colorful.Color{R: 0.0, G: 0.0, B: 0.0}
+)
+
+func noise(w int, h int) image.Image {
+	i := image.NewRGBA(image.Rect(0, 0, w, h))
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+			color := white
+			if rand.Float32() < 0.5 {
+				color = black
+			}
+			i.Set(x, y, color)
+		}
+	}
+	return i
+}
+
 func rgbaToColor(r uint32, g uint32, b uint32, _a uint32) colorful.Color {
-	fmt.Println(r, g, b)
 	return colorful.Color{R: float64(r/257) / 255, G: float64(g/257) / 255, B: float64(b/257) / 255}
 }
 
-// squared distance between two values that do not wrap on overflow
-func diffN(a float64, b float64) float64 {
-	return (a - b) * (a - b)
-}
+func dist(a image.Image, b image.Image) (float64, error) {
+	wa, ha, psa, err := getPixels(a)
+	if err != nil {
+		return 0, err
+	}
+	wb, hb, psb, err := getPixels(b)
+	if err != nil {
+		return 0, err
+	}
+	if wa != wb || ha != hb {
+		return 0, fmt.Errorf("Dimension mismatch: %dx%d, %dx%d", wa, ha, wb, hb)
+	}
 
-// squared distance between two values that DO wrap on overflow @ range
-func diffNCirc(a float64, b float64, rang float64) float64 {
-	x := math.Min(a, b)
-	y1 := math.Max(a, b)
-	y2 := y1 - rang
-	return math.Min(diffN(x, y1), diffN(x, y2))
-}
+	dist := 0.0
+	for i, pa := range psa {
+		pb := psb[i]
+		dist += pa.DistanceLab(pb)
+	}
 
-// squared distance between H, S, V values of two points
-func diff(a colorful.Color, b colorful.Color) float64 {
-	hA, cA, lA := a.Hcl()
-	hB, cB, lB := b.Hcl()
-	diffH := diffNCirc(hA, hB, 1.0)
-	diffC := diffN(cA, cB)
-	diffL := diffN(lA, lB)
-	return diffH + diffC + diffL
+	return dist, err
 }
 
 // Return all pixels in a single array
-func getPixels(file io.Reader) ([]colorful.Color, error) {
-	img, _, err := image.Decode(file)
-	if err != nil {
-		return nil, err
-	}
-
+func getPixels(img image.Image) (int, int, []colorful.Color, error) {
 	bounds := img.Bounds()
 	width, height := bounds.Max.X, bounds.Max.Y
-
 	var pixels []colorful.Color
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			pixels = append(pixels, rgbaToColor(img.At(x, y).RGBA()))
 		}
 	}
-	return pixels, nil
+	return width, height, pixels, nil
+}
+
+func save(i image.Image, fn string) error {
+	f, err := os.Create(fn)
+	if err != nil {
+		return err
+	}
+	return png.Encode(f, i)
 }
 
 func main() {
 	image.RegisterFormat("png", "png", png.Decode, png.DecodeConfig)
 
-	file, err := os.Open("./image.png")
+	f, err := os.Open("cat-dither.png")
 	if err != nil {
-		fmt.Println("Error: File could not be opened")
-		os.Exit(1)
+		log.Fatal(err)
 	}
-	defer file.Close()
+	defer f.Close()
 
-	pixels, err := getPixels(file)
+	orig, _, err := image.Decode(f)
 	if err != nil {
-		fmt.Println("Error: Image could not be decoded")
-		os.Exit(1)
+		log.Fatal(err)
 	}
+	bounds := orig.Bounds()
+	w, h := bounds.Max.X, bounds.Max.Y
 
-	white := colorful.Color{R: 1.0, G: 1.0, B: 1.0}
-	black := colorful.Color{R: 0.0, G: 0.0, B: 0.0}
-	wh, ws, wv := white.Hcl()
-	fmt.Printf("%f, %f, %f\n", wh, ws, wv)
-	bh, bs, bv := black.Hcl()
-	fmt.Printf("%f, %f, %f\n", bh, bs, bv)
+	bl := blur.Gaussian(orig, 2.0)
+	save(bl, "blur.png")
 
-	for _, pixel := range pixels {
-		fmt.Printf("%f, %f, %f\n", pixel.R, pixel.G, pixel.B)
-		h, s, v := pixel.Hsv()
-		fmt.Printf("%f, %f, %f, %f, %f\n", h, s, v, diff(pixel, white), diff(pixel, black))
-	}
+	sh := effect.UnsharpMask(orig, 2.0, 0.5)
+	save(sh, "sharp.png")
 
-	fmt.Println(len(pixels))
+	blsh := effect.UnsharpMask(bl, 2.0, 0.5)
+	save(blsh, "blsh.png")
+
+	n := noise(w, h)
+	save(n, "noise.png")
+
+	fmt.Println(dist(orig, bl))
+	fmt.Println(dist(orig, sh))
+	fmt.Println(dist(orig, blsh))
+	fmt.Println(dist(orig, n))
 }
