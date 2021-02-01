@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"log"
 	"math/rand"
@@ -14,8 +15,8 @@ import (
 )
 
 var (
-	white = colorful.Color{R: 1.0, G: 1.0, B: 1.0}
-	black = colorful.Color{R: 0.0, G: 0.0, B: 0.0}
+	white = color.RGBA{255, 255, 255, 255}
+	black = color.RGBA{0, 0, 0, 255}
 )
 
 func noise(w int, h int) image.Image {
@@ -79,10 +80,35 @@ func save(i image.Image, fn string) error {
 	return png.Encode(f, i)
 }
 
+// Combine base and noise into a mutation, then evaluate it against the goal image
+func mutateAndEval(goal image.Image, base image.Image, chg float64) (image.Image, float64, error) {
+	b := goal.Bounds().Max
+	w, h := b.X, b.Y
+	mutated := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if rand.Float64() > chg {
+				mutated.Set(x, y, base.At(x, y))
+				continue
+			}
+
+			if base.At(x, y) == black {
+				mutated.Set(x, y, white)
+			} else {
+				mutated.Set(x, y, black)
+			}
+		}
+	}
+	bl := blur.Gaussian(mutated, 2.0)
+	blsh := effect.UnsharpMask(bl, 2.0, 0.5)
+	d, err := dist(blsh, goal)
+	return mutated, d, err
+}
+
 func main() {
 	image.RegisterFormat("png", "png", png.Decode, png.DecodeConfig)
 
-	f, err := os.Open("cat-dither.png")
+	f, err := os.Open("bc.png")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -92,23 +118,40 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	bounds := orig.Bounds()
-	w, h := bounds.Max.X, bounds.Max.Y
 
-	bl := blur.Gaussian(orig, 2.0)
-	save(bl, "blur.png")
+	cand := noise(orig.Bounds().Max.X, orig.Bounds().Max.Y)
+	candDist, err := dist(cand, orig)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	sh := effect.UnsharpMask(orig, 2.0, 0.5)
-	save(sh, "sharp.png")
+	for i := 0; i < 1000000; i++ {
+		mut := rand.Float64() * 0.05
+		newCand, newDist, err := mutateAndEval(orig, cand, mut)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	blsh := effect.UnsharpMask(bl, 2.0, 0.5)
-	save(blsh, "blsh.png")
+		if newDist < candDist {
+			fmt.Printf("Promoted at gen %d: (mut: %f) %f -> %f\n", i, mut, candDist, newDist)
+			cand = newCand
+			candDist = newDist
+			save(cand, fmt.Sprintf("zz_cand_%d.png", i))
+		}
+	}
 
-	n := noise(w, h)
-	save(n, "noise.png")
+	fmt.Printf("Final distance: %f\n", candDist)
+	save(cand, "cand.png")
 
-	fmt.Println(dist(orig, bl))
-	fmt.Println(dist(orig, sh))
-	fmt.Println(dist(orig, blsh))
-	fmt.Println(dist(orig, n))
+	// bl := blur.Gaussian(orig, 2.0)
+	// save(bl, "blur.png")
+
+	// sh := effect.UnsharpMask(orig, 2.0, 0.5)
+	// save(sh, "sharp.png")
+
+	// blsh := effect.UnsharpMask(bl, 2.0, 0.5)
+	// save(blsh, "blsh.png")
+
+	// n := noise(w, h)
+	// save(n, "noise.png")
 }
