@@ -6,12 +6,14 @@ import (
 	"image/color"
 	"image/png"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 
 	"github.com/anthonynsimon/bild/blur"
 	"github.com/anthonynsimon/bild/effect"
 	"github.com/lucasb-eyer/go-colorful"
+	ring "github.com/zealws/golang-ring"
 )
 
 var (
@@ -125,15 +127,29 @@ func main() {
 		log.Fatal(err)
 	}
 
-	for i := 0; i < 1000000; i++ {
-		mut := rand.Float64() * 0.05
-		newCand, newDist, err := mutateAndEval(orig, cand, mut)
+	mutMax := 0.20
+	ring.DefaultCapacity = 10
+	recentMuts := ring.Ring{}
+	recentMuts.Enqueue(mutMax)
+
+	for i := 0; i < 10000; i++ {
+		allRm := recentMuts.Values()
+		currMutMax := math.Inf(-1)
+		for _, i := range allRm {
+			iF := i.(float64)
+			if iF > currMutMax {
+				currMutMax = iF
+			}
+		}
+		mut := rand.Float64() * currMutMax
+		newCand, newDist, err := mutateAndEval(orig, cand, currMutMax)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		if newDist < candDist {
-			fmt.Printf("Promoted at gen %d: (mut: %f) %f -> %f\n", i, mut, candDist, newDist)
+			fmt.Printf("Promoted at gen %d: (mut: %f, %f) %f -> %f\n", i, currMutMax, mut, candDist, newDist)
+			recentMuts.Enqueue(mut)
 			cand = newCand
 			candDist = newDist
 			save(cand, fmt.Sprintf("zz_cand_%d.png", i))
@@ -142,16 +158,4 @@ func main() {
 
 	fmt.Printf("Final distance: %f\n", candDist)
 	save(cand, "cand.png")
-
-	// bl := blur.Gaussian(orig, 2.0)
-	// save(bl, "blur.png")
-
-	// sh := effect.UnsharpMask(orig, 2.0, 0.5)
-	// save(sh, "sharp.png")
-
-	// blsh := effect.UnsharpMask(bl, 2.0, 0.5)
-	// save(blsh, "blsh.png")
-
-	// n := noise(w, h)
-	// save(n, "noise.png")
 }
